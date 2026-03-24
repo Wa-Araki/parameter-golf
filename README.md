@@ -14,6 +14,122 @@ Ideally, we'd allow for submissions to use arbitrary computational resources. Bu
 We also know compute is expensive, so **OpenAI is sponsoring $1,000,000 in compute credits** to help people get started training their models. To request a compute grant, use this form: [Request a Compute Grant](https://openai.com/index/parameter-golf/#credit-form).
 When requesting compute, please make sure you choose the appropriate level, write sufficient justification, and **submit with an email tied to a OpenAI / ChatGPT account**.
 
+## 最初の実行ガイド（日本語）
+
+### まず何をするリポジトリか
+- このリポジトリは、**16MB 以下に圧縮できる言語モデル**を学習し、FineWeb 検証セットでの圧縮性能を比較するための実験基盤です。
+- 最小構成では、`Makefile` の 3 ターゲット（データ取得 / 学習 / ログ要約）を順番に実行するだけで、baseline 再現と結果確認まで到達できます。
+- 学習本体は `train_gpt.py`、データ取得は `data/cached_challenge_fineweb.py`、結果要約は `scripts/summarize_train_log.py` が担当します。
+- 比較の主指標は **`val_bpb`（低いほど良い）** です。補助的に **`val_loss`** と **圧縮後サイズ（`Serialized model int8+zlib` / `Total submission size int8+zlib`）** を見ます。
+- baseline 実験ハーネスとして、`make download-fineweb-baseline` → `make train-baseline` → `make summarize-baseline-log` の導線が整備されています。
+- 2 本目の改善タスクとして、**baseline 近傍の差分実験**（例: `LR_WARMUP_ITERS` のみ変更して A/B 比較）を、同じハーネスで実行できます。
+- まずは「baseline が再現できること」を優先し、そこから 1 要素ずつ改善を試すのが安全です。
+- 現段階で最初からやらないこと: 蒸留・新規アーキテクチャ大改造・トークナイザ変更など、比較条件を大きく崩す改変は初回では避けます。
+
+### 最短の実行手順
+1. **環境確認**
+   - 実行コマンド
+     ```bash
+     python3 -m venv .venv
+     source .venv/bin/activate
+     python -m pip install --upgrade pip
+     pip install -r requirements.txt
+     ```
+   - 何が起きるか  
+     仮想環境を作成し、`train_gpt.py` とデータ取得・要約スクリプトに必要な依存を入れます。
+   - 成功したら何が見えるか  
+     `(.venv)` プロンプトになり、`pip install` がエラーなく完了します。
+   - 失敗時にまず疑う点  
+     Python バージョン差異、CUDA/PyTorch 環境不一致、依存インストール途中のネットワーク不調。
+
+2. **データ取得**
+   - 実行コマンド
+     ```bash
+     make download-fineweb-baseline
+     ```
+     （必要なら例: `TRAIN_SHARDS=80 make download-fineweb-baseline`）
+   - 何が起きるか  
+     `data/cached_challenge_fineweb.py` が `sp1024` 前提でデータを取得し、学習用データとトークナイザを配置します。
+   - 成功したら何が見えるか  
+     `./data/datasets/fineweb10B_sp1024/` と `./data/tokenizers/fineweb_1024_bpe.model` を学習コマンドが参照可能な状態になります。
+   - 失敗時にまず疑う点  
+     ネットワーク、ディスク容量不足、`TRAIN_SHARDS` 指定ミス、途中中断でデータが不完全なままになっていること。
+
+3. **baseline 実行**
+   - 実行コマンド
+     ```bash
+     make train-baseline
+     ```
+     （軽い疎通確認: `NPROC_PER_NODE=1 RUN_ID=baseline_smoke TRAIN_ENV="ITERATIONS=200 MAX_WALLCLOCK_SECONDS=0" make train-baseline`）
+   - 何が起きるか  
+     `torchrun` 経由で `train_gpt.py` が起動し、学習ログ（`train_loss` など）と最終評価（`val_loss`, `val_bpb`, 圧縮サイズ）を標準出力へ出します。
+   - 成功したら何が見えるか  
+     終盤に `final_int8_zlib_roundtrip_exact ... val_bpb:...` とサイズ情報が出て、run が正常終了します。
+   - 失敗時にまず疑う点  
+     GPU 数と `NPROC_PER_NODE` の不整合、`DATA_PATH` / `TOKENIZER_PATH` の参照先不一致、VRAM 不足、`torchrun` 実行環境の問題。
+
+4. **改善版の実行（2 本目の改善タスク）**
+   - 実行コマンド（README 既存導線に合わせた最小差分）
+     ```bash
+     # Baseline
+     NPROC_PER_NODE=1 RUN_ID=baseline_ref make train-baseline | tee baseline_ref.log
+
+     # 改善版（LR warmup のみ追加）
+     NPROC_PER_NODE=1 RUN_ID=baseline_lr_warmup_200 \
+     TRAIN_ENV="LR_WARMUP_ITERS=200" \
+     make train-baseline | tee baseline_lr_warmup_200.log
+     ```
+   - 何が起きるか  
+     baseline と改善版を同条件で 2 本走らせ、差分を `LR_WARMUP_ITERS` のみに限定した A/B ができます。
+   - 成功したら何が見えるか  
+     2 本のログファイルが生成され、後段の要約で `lr_warmup_iters` を含む実行条件差分を確認できます。
+   - 失敗時にまず疑う点  
+     ログ保存先の権限、シェル改行（`\`）の崩れ、`TRAIN_ENV` のクオート漏れで環境変数が反映されないこと。
+
+5. **ログ要約 / 結果確認**
+   - 実行コマンド
+     ```bash
+     make summarize-baseline-log LOG_PATH=baseline_ref.log
+     make summarize-baseline-log LOG_PATH=baseline_lr_warmup_200.log
+     ```
+   - 何が起きるか  
+     `scripts/summarize_train_log.py` がログを正規表現で解析し、`final.val_bpb`・`artifact.total_submission_bytes`・実行条件を JSON で出力します。
+   - 成功したら何が見えるか  
+     比較に必要な値（`final`, `artifact`, `run_conditions`）が JSON でまとまって表示されます。
+   - 失敗時にまず疑う点  
+     `LOG_PATH` ミス、学習途中停止で最終行が欠損、ログ形式が想定外で必要キーが `null` になっていること。
+
+### 何をチェックすべきか
+- データ配置:
+  - `./data/datasets/fineweb10B_sp1024/` が存在するか
+  - `./data/tokenizers/fineweb_1024_bpe.model` が存在するか
+- 学習完走:
+  - 学習コマンドが異常終了していないか
+  - 最終評価行（`final_int8_zlib_roundtrip_exact ...`）まで出ているか
+- ログ:
+  - `tee` した `train.log` / `baseline_ref.log` / `baseline_lr_warmup_200.log` があるか
+- 指標:
+  - `val_bpb` が取得できているか（主指標）
+  - `val_loss` が取得できているか（補助指標）
+  - `Total submission size int8+zlib` が確認できるか（16,000,000 bytes 制約）
+- baseline と改善版の比較で最初に見る点:
+  - まず `final.val_bpb`（改善有無）
+  - 次に `artifact.total_submission_bytes`（制約違反がないか）
+  - その後 `run_conditions` を見て、公平比較（差分が意図した 1 点のみ）になっているか
+
+### 実行の全体像
+- 流れは **データ取得 → 学習 → 評価 → 要約** です。
+- データ取得: 学習と評価に必要な FineWeb キャッシュと tokenizer をそろえる段階です。
+- 学習: `train_gpt.py` を実行して重みを更新し、最後に圧縮評価まで行います。
+- 評価: `val_loss` / `val_bpb` と圧縮サイズを出し、提出可能性を判定します。
+- 要約: ログから比較可能な JSON を作り、baseline と改善版の差を機械的に確認します。
+- 初回はスコア改善よりも、**baseline を同じ手順で再現し、指標を取得できること**を完了条件にしてください。
+
+### この README の読み方
+- 最初はこの「最初の実行ガイド（日本語）」だけを読み、上の 1〜5 をそのまま実行してください。
+- 次に、`## Getting Started` の **Quick Baseline Reproduction (CUDA)** と **Baseline-near Differential Experiment** を読みます。
+- クラウド実行（Runpod）や提出ルールなどの詳細は、README 後半の既存セクションを参照してください。
+
 ## Participant Form
 
 If you enjoy solving very difficult technical problems, please introduce yourself via the [Challenge Participant Form](https://jobs.ashbyhq.com/openai/form/open-ai-challenge-parameter-golf). It helps us attribute challenge submissions and reach out about opportunities with OpenAI. _Completing the form is not required to participate._
