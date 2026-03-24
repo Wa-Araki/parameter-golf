@@ -97,6 +97,44 @@ This prints JSON with:
 - key run conditions (dataset shards, world size, train tokens, seq_len, iterations, seed, tokenizer path)
 - compressed model size (`Serialized model int8+zlib`) and total submission bytes.
 
+### Baseline-near Differential Experiment (small, low-risk)
+
+If you want to run a **single small ablation near baseline** (without changing architecture/tokenizer/data), use this checklist.
+
+Candidate ideas (all baseline-near and low complexity):
+
+| Idea | What changes | Why it might help | Cost | Risk |
+|---|---|---|---|---|
+| A. LR warmup in main training | Add short linear LR ramp for first N train steps (`LR_WARMUP_ITERS`) | Reduces early-step instability / overshoot with large baseline LRs | Very low (1 env var + scheduler branch) | Low |
+| B. Warmdown length tweak | Change `WARMDOWN_ITERS` (e.g. 1200 → 1600) | Smoother final optimization near wallclock cap | Very low | Low/medium (can under-train if too long) |
+| C. Sequence length tweak | Change `TRAIN_SEQ_LEN` (e.g. 1024 → 1536/2048) | More context per example can improve validation compression | Low/medium (retune throughput) | Medium (tokens/sec and memory tradeoff) |
+
+Recommended first differential run (lowest risk + easiest A/B):
+- **Choose A: main-training LR warmup only**.
+- Keep everything else equal to baseline.
+
+Example commands (baseline vs diff):
+
+```bash
+# Baseline
+NPROC_PER_NODE=1 RUN_ID=baseline_ref make train-baseline | tee baseline_ref.log
+
+# Differential run: only LR warmup changed
+NPROC_PER_NODE=1 RUN_ID=baseline_lr_warmup_200 \
+TRAIN_ENV="LR_WARMUP_ITERS=200" \
+make train-baseline | tee baseline_lr_warmup_200.log
+
+# Summaries for comparison
+make summarize-baseline-log LOG_PATH=baseline_ref.log
+make summarize-baseline-log LOG_PATH=baseline_lr_warmup_200.log
+```
+
+Metrics to compare vs baseline:
+- Primary: `final.val_bpb` (lower is better).
+- Secondary quality: `final.val_loss`.
+- Constraint checks: `artifact.total_submission_bytes` (must stay under 16,000,000 bytes).
+- Fairness checks: ensure run conditions match (seed/world size/iterations/train_batch_tokens/train_seq_len), with only `lr_warmup_iters` changed.
+
 ### Training Your First Model (Mac with Apple Silicon)
 
 If you have an Apple laptop or desktop with Apple Silicon, we've set up a simple MLX training script to help you start iterating locally.

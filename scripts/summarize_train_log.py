@@ -54,9 +54,17 @@ def main() -> None:
     train_cfg = first_match(
         r"train_batch_tokens:(?P<train_batch_tokens>\d+) train_seq_len:(?P<train_seq_len>\d+) "
         r"iterations:(?P<iterations>\d+) warmup_steps:(?P<warmup_steps>\d+) "
+        r"lr_warmup_iters:(?P<lr_warmup_iters>\d+) warmdown_iters:(?P<warmdown_iters>\d+) "
         r"max_wallclock_seconds:(?P<max_wallclock_seconds>[0-9.]+)",
         text,
     )
+    if train_cfg is None:
+        train_cfg = first_match(
+            r"train_batch_tokens:(?P<train_batch_tokens>\d+) train_seq_len:(?P<train_seq_len>\d+) "
+            r"iterations:(?P<iterations>\d+) warmup_steps:(?P<warmup_steps>\d+) "
+            r"max_wallclock_seconds:(?P<max_wallclock_seconds>[0-9.]+)",
+            text,
+        )
     seed = first_match(r"seed:(?P<seed>\d+)", text)
     tokenizer = first_match(
         r"val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path=(?P<tokenizer_path>\S+)",
