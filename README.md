@@ -57,6 +57,46 @@ Happy training!
 
 ## Getting Started
 
+### Quick Baseline Reproduction (CUDA)
+
+If you want the shortest path to rerun the baseline on a CUDA machine, use the Make targets below.
+
+1) **Setup**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+2) **Download FineWeb baseline data (1 command)**
+```bash
+make download-fineweb-baseline
+```
+
+By default this fetches tokenizer variant `sp1024` with `TRAIN_SHARDS=10` (first 1B train tokens) plus full validation.  
+To change shard count, override at runtime (example: `TRAIN_SHARDS=80 make download-fineweb-baseline`).
+
+3) **Launch baseline training (1 command)**
+```bash
+make train-baseline
+```
+
+Useful overrides for quick iteration:
+```bash
+NPROC_PER_NODE=1 RUN_ID=baseline_smoke TRAIN_ENV="ITERATIONS=200 MAX_WALLCLOCK_SECONDS=0" make train-baseline
+```
+
+4) **Summarize results from train.log (1 command)**
+```bash
+make summarize-baseline-log LOG_PATH=path/to/train.log
+```
+
+This prints JSON with:
+- final `val_bpb` / `val_loss` (from `final_int8_zlib_roundtrip_exact` when present)
+- key run conditions (dataset shards, world size, train tokens, seq_len, iterations, seed, tokenizer path)
+- compressed model size (`Serialized model int8+zlib`) and total submission bytes.
+
 ### Training Your First Model (Mac with Apple Silicon)
 
 If you have an Apple laptop or desktop with Apple Silicon, we've set up a simple MLX training script to help you start iterating locally.
